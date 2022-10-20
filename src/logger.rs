@@ -12,6 +12,7 @@ use fnv::FnvHashMap;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::{ffi::CString, ops::Deref};
+use string_builder::Builder as StringBuilder;
 use tracing_core::{
 	span::{Attributes, Id},
 	Event, Level, Subscriber,
@@ -24,20 +25,24 @@ use tracing_subscriber::{
 static NAMES: Lazy<Mutex<FnvHashMap<String, CString>>> =
 	Lazy::new(|| Mutex::new(FnvHashMap::default()));
 
-struct Activity(os_activity_t);
+struct Activity {
+	activity: os_activity_t,
+	attributes: AttributeMap,
+}
+
 // lol
 unsafe impl Send for Activity {}
 unsafe impl Sync for Activity {}
 impl Deref for Activity {
 	type Target = os_activity_t;
 	fn deref(&self) -> &Self::Target {
-		&self.0
+		&self.activity
 	}
 }
 impl Drop for Activity {
 	fn drop(&mut self) {
 		unsafe {
-			os_release(self.0 as *mut _);
+			os_release(self.activity as *mut _);
 		}
 	}
 }
@@ -98,7 +103,7 @@ where
 					"{}({})",
 					function_name,
 					attributes
-						.into_iter()
+						.iter()
 						.map(|(k, v)| format!("{}: {}", k, v))
 						.collect::<Vec<_>>()
 						.join(", ")
@@ -115,11 +120,14 @@ where
 					os_activity_flag_t_OS_ACTIVITY_FLAG_DEFAULT,
 				)
 			};
-			extensions.insert(Activity(activity));
+			extensions.insert(Activity {
+				activity,
+				attributes,
+			});
 		}
 	}
 
-	fn on_event(&self, event: &Event, _ctx: Context<S>) {
+	fn on_event(&self, event: &Event, ctx: Context<S>) {
 		let metadata = event.metadata();
 		let level = match *metadata.level() {
 			Level::TRACE => os_log_type_t_OS_LOG_TYPE_DEBUG,
@@ -131,20 +139,68 @@ where
 		let mut attributes = AttributeMap::default();
 		let mut attr_visitor = FieldVisitor::new(&mut attributes);
 		event.record(&mut attr_visitor);
-		let mut message = String::new();
-		if let Some(value) = attributes.remove(&"message".to_string()) {
-			message = value;
-			message.push_str("  ");
+
+		let mut message = StringBuilder::default();
+
+		if let Some(scope) = ctx.event_scope(event) {
+			for span in scope.from_root() {
+				message.append(span.name());
+
+				let ext = span.extensions();
+				let attributes = &ext
+					.get::<Activity>()
+					.expect("will never be `None`")
+					.attributes;
+
+				if !attributes.is_empty() {
+					message.append("{");
+
+					let mut n = 0;
+					for (k, v) in attributes.iter() {
+						if k.as_str().starts_with("log.") {
+							continue;
+						}
+
+						if n > 0 {
+							message.append(",");
+						}
+						n = n + 1;
+
+						message.append(k.as_str());
+						message.append("=");
+						message.append(v.as_str());
+					}
+
+					message.append("}");
+				}
+
+				message.append(": ");
+			}
 		}
-		message.push_str(
-			&attributes
-				.into_iter()
-				.map(|(k, v)| format!("{}={}", k, v))
-				.collect::<Vec<_>>()
-				.join(" "),
-		);
-		let message =
-			CString::new(message).expect("failed to convert formatted message to a C string");
+
+		if let Some(value) = attributes.remove(&"message".to_string()) {
+			message.append(value);
+			message.append("  ");
+		}
+
+		let mut n = 0;
+		for (k, v) in attributes.into_iter() {
+			if k.as_str().starts_with("log.") {
+				continue;
+			}
+
+			if n > 0 {
+				message.append(" ");
+			}
+			n = n + 1;
+
+			message.append(k);
+			message.append("=");
+			message.append(v);
+		}
+
+		let message = CString::new(message.string().expect("build string error"))
+			.expect("failed to convert formatted message to a C string");
 		unsafe { wrapped_os_log_with_type(self.logger, level, message.as_ptr()) };
 	}
 

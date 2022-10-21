@@ -162,7 +162,7 @@ where
 						}
 
 						if n > 0 {
-							message.append(",");
+							message.append(" ");
 						}
 						n = n + 1;
 
@@ -174,7 +174,7 @@ where
 					message.append("}");
 				}
 
-				message.append(": ");
+				message.append(":");
 			}
 		}
 

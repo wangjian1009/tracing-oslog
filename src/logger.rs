@@ -164,7 +164,7 @@ where
 						if n > 0 {
 							message.append(" ");
 						}
-						n = n + 1;
+						n += 1;
 
 						message.append(k.as_str());
 						message.append("=");
@@ -192,7 +192,7 @@ where
 			if n > 0 {
 				message.append(" ");
 			}
-			n = n + 1;
+			n += 1;
 
 			message.append(k);
 			message.append("=");
